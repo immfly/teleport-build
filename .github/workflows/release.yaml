@@ -1,0 +1,104 @@
+---
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions: write-all
+
+env:
+  BINARYEN_VERSION: version_124
+  GH_CLI_VERSION: 2.79.0
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout self repo
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          path: teleport-build-repo
+
+      - name: Checkout teleport repo and tag
+        uses: actions/checkout@v5
+        with:
+          repository: gravitational/teleport
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+          cache-dependency-path: "**/*.sum"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: 'package.json'
+
+      - name: Get versions
+        id: versions
+        run: |
+          RUST_TOOLCHAIN_VERSION=$(make -C build.assets print-rust-version --no-print-directory)
+          echo "RUST_TOOLCHAIN_VERSION=$RUST_TOOLCHAIN_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.versions.outputs.RUST_TOOLCHAIN_VERSION }}
+
+      - name: Install GH CLI
+        if: ${{ env.ACT }}
+        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
+        with:
+          gh-cli-version: ${{ env.GH_CLI_VERSION }}
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGOFLAG: CGO_ENABLED=0
+        run: |
+          gh release -R WebAssembly/binaryen download "${{ env.BINARYEN_VERSION }}" \
+            --pattern 'binaryen-*-x86_64-linux.tar.gz' -O- | \
+            tar xzf - -C /usr --strip-components=1
+
+          make ensure-wasm-pack
+          make ensure-wasm-bindgen
+          make binaries
+          tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C build .
+          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.xz" -C build .
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./teleport-build-repo/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        if: false # Disabled, as we already push it to the release. Left as reference
+        with:
+          name: build-binaries
+          path: |
+            teleport-${{ github.ref_name }}.tar.gz
+            teleport-${{ github.ref_name }}.tar.xz
+          if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            teleport-${{ github.ref_name }}.tar.gz
+            teleport-${{ github.ref_name }}.tar.xz
+          fail_on_unmatched_files: true
