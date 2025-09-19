@@ -28,18 +28,24 @@ jobs:
         with:
           repository: gravitational/teleport
           ref: ${{ github.ref_name }}
+          path: teleport-repo
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: ./go.mod
-          cache-dependency-path: "**/*.sum"
+          go-version-file: teleport-repo/go.mod
+          cache-dependency-path: "teleport-repo/**/*.sum"
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 10.17.0
 
       - uses: actions/setup-node@v5
         with:
-          node-version-file: 'package.json'
+          node-version-file: 'teleport-repo/package.json'
 
       - name: Get versions
         id: versions
+        working-directory: teleport-repo
         run: |
           RUST_TOOLCHAIN_VERSION=$(make -C build.assets print-rust-version --no-print-directory)
           echo "RUST_TOOLCHAIN_VERSION=$RUST_TOOLCHAIN_VERSION" >> "$GITHUB_OUTPUT"
@@ -48,6 +54,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ steps.versions.outputs.RUST_TOOLCHAIN_VERSION }}
+          rust-src-dir: teleport-repo
 
       - name: Install GH CLI
         if: ${{ env.ACT }}
@@ -58,17 +65,20 @@ jobs:
       - name: Build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CGOFLAG: CGO_ENABLED=0
         run: |
           gh release -R WebAssembly/binaryen download "${{ env.BINARYEN_VERSION }}" \
             --pattern 'binaryen-*-x86_64-linux.tar.gz' -O- | \
-            tar xzf - -C /usr --strip-components=1
+            sudo tar xzf - -C /usr --strip-components=1
 
-          make ensure-wasm-pack
-          make ensure-wasm-bindgen
-          make binaries
-          tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C build .
-          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.xz" -C build .
+          (
+            cd teleport-repo
+            make ensure-wasm-pack
+            make ensure-wasm-bindgen
+            make binaries
+          )
+
+          tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C teleport-repo/build .
+          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.xz" -C teleport-repo/build .
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -80,7 +90,7 @@ jobs:
       - name: Docker build
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./teleport-repo
           file: ./teleport-build-repo/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
