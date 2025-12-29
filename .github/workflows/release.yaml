@@ -72,7 +72,8 @@ jobs:
 
           (
             cd teleport-repo
-            make full
+            make ensure-wasm-deps
+            make binaries
           )
 
           tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C teleport-repo/build .
