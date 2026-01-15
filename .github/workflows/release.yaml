@@ -97,6 +97,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set short version
+        id: set_version
+        run: |
+          SHORT_VERSION=$(echo "${GITHUB_REF_NAME}" | cut -d. -f1)
+          echo "SHORT_VERSION=$SHORT_VERSION" >> $GITHUB_ENV
+
       - name: Docker build
         uses: docker/build-push-action@v6
         with:
@@ -105,7 +111,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ env.SHORT_VERSION }}
 
       - name: Upload build
         uses: actions/upload-artifact@v4
