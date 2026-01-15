@@ -88,7 +88,7 @@ jobs:
           )
 
           tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C teleport-repo/build .
-          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.xz" -C teleport-repo/build .
+          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.zstd" -C teleport-repo/build .
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -114,7 +114,7 @@ jobs:
           name: build-binaries
           path: |
             teleport-${{ github.ref_name }}.tar.gz
-            teleport-${{ github.ref_name }}.tar.xz
+            teleport-${{ github.ref_name }}.tar.zstd
           if-no-files-found: error
 
       - name: Release
@@ -122,5 +122,5 @@ jobs:
         with:
           files: |
             teleport-${{ github.ref_name }}.tar.gz
-            teleport-${{ github.ref_name }}.tar.xz
+            teleport-${{ github.ref_name }}.tar.zstd
           fail_on_unmatched_files: true
