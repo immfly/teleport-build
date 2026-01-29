@@ -41,54 +41,43 @@ jobs:
           ref: ${{ github.ref_name }}
           path: teleport-repo
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: teleport-repo/go.mod
-          cache-dependency-path: "teleport-repo/**/*.sum"
-
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 10.17.0
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: 'teleport-repo/package.json'
-
       - name: Get versions
         id: versions
         working-directory: teleport-repo
         run: |
-          RUST_TOOLCHAIN_VERSION=$(make -C build.assets print-rust-version --no-print-directory)
-          echo "RUST_TOOLCHAIN_VERSION=$RUST_TOOLCHAIN_VERSION" >> "$GITHUB_OUTPUT"
+          SHORT_VERSION=$(echo "${GITHUB_REF_NAME}" | cut -d. -f1)
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: ${{ steps.versions.outputs.RUST_TOOLCHAIN_VERSION }}
-          rust-src-dir: teleport-repo
+          echo "SHORT_VERSION=${SHORT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "VERSION_no_v=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
 
-      - name: Install GH CLI
-        if: ${{ env.ACT }}
-        uses: dev-hanz-ops/install-gh-cli-action@v0.2.1
-        with:
-          gh-cli-version: ${{ env.GH_CLI_VERSION }}
+      - name: Workaround for the https://github.com/gravitational/teleport/issues/48936 bug
+        run: |
+          # Remove the arch test (avoid install go)
+          sed -i 's|^ARCH.*|ARCH := amd64|' teleport-repo/build.assets/arch.mk
+
+          # Sets the correct devtoolset as default (Dockerfile-centos7 only)
+          sed -i '/^FROM base AS buildbox$/a\ENTRYPOINT ["bash", "-c", "scl enable \\\"$DEVTOOLSET\\\" -- \\\"$@\\\"", "--"]' teleport-repo/build.assets/Dockerfile-centos7
 
       - name: Build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: teleport-repo
         run: |
-          gh release -R WebAssembly/binaryen download "${{ env.BINARYEN_VERSION }}" \
-            --pattern 'binaryen-*-x86_64-linux.tar.gz' -O- | \
-            sudo tar xzf - -C /usr --strip-components=1
+          export GOCACHE=~/gocache
+          mkdir -m 777 ${GOCACHE}
 
-          (
-            cd teleport-repo
-            make ensure-wasm-deps
-            make binaries
-          )
+          make -C build.assets build
 
-          tar -czf "teleport-${{ github.ref_name }}.tar.gz" -C teleport-repo/build .
-          tar --zstd -cf "teleport-${{ github.ref_name }}.tar.xz" -C teleport-repo/build .
+          tar -czf "../teleport-${{ github.ref_name }}-linux-amd64-bin.tar.gz" -C build --exclude=artifacts .
+          tar --zstd -cf "../teleport-${{ github.ref_name }}-linux-amd64-bin.tar.zstd" -C build --exclude=artifacts .
+
+      - name: Build deb package
+        working-directory: teleport-repo
+        run: |
+          ln -s $(pwd)/build/artifacts /tmp/teleport-tarballs
+          ./build.assets/build-package.sh -t oss -v ${GITHUB_REF_NAME#v} -p deb -a amd64 -s .
+
+          # Used for Docker build (next steps)
+          cp teleport_*_amd64.deb ./build.assets/charts/
+          mv teleport_*_amd64.deb ..
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -100,12 +89,14 @@ jobs:
       - name: Docker build
         uses: docker/build-push-action@v6
         with:
-          context: ./teleport-repo
-          file: ./teleport-build-repo/Dockerfile
+          context: ./teleport-repo/build.assets/charts/
+          file: ./teleport-repo/build.assets/charts/Dockerfile-distroless
           push: true
+          build-args: |
+            TELEPORT_VERSION=${{ steps.versions.outputs.VERSION_no_v }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.versions.outputs.SHORT_VERSION }}
 
       - name: Upload build
         uses: actions/upload-artifact@v4
@@ -113,14 +104,15 @@ jobs:
         with:
           name: build-binaries
           path: |
-            teleport-${{ github.ref_name }}.tar.gz
-            teleport-${{ github.ref_name }}.tar.xz
+            teleport-${{ github.ref_name }}-linux-amd64-bin.tar.gz
+            teleport-${{ github.ref_name }}-linux-amd64-bin.tar.zstd
           if-no-files-found: error
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            teleport-${{ github.ref_name }}.tar.gz
-            teleport-${{ github.ref_name }}.tar.xz
+            teleport-${{ github.ref_name }}-linux-amd64-bin.tar.gz
+            teleport-${{ github.ref_name }}-linux-amd64-bin.tar.zstd
+            teleport_${{ steps.versions.outputs.VERSION_no_v }}_amd64.deb
           fail_on_unmatched_files: true
